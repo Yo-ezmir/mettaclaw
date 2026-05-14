@@ -8,6 +8,8 @@
 (= (wakeupInterval) (empty))
 (= (spamShield) (empty))
 
+(= (useFrames) (empty))
+
 (= (initLoop)
    (progn (println! "=== OmegaClaw Configuration ===")
           (configure maxNewInputLoops 50)
@@ -22,7 +24,8 @@
           (change-state! &prevmsg "")
           (change-state! &lastresults "")
           (change-state! &loops (maxNewInputLoops))
-          (initContextFrame)))
+          (configure useFrames False)
+          (if (== (useFrames) True) (initContextFrame) _)))
 
 
 (= (getContext)
@@ -32,12 +35,16 @@
           "CURRENT_CONTEXT_FRAME_S_EXPR: " (contextFrameForPrompt) (newline)
           "SKILL_SET: " (getSkills) (newline)
           "FRAME_RULES: " (newline)
-          "- Treat CURRENT_CONTEXT_FRAME_S_EXPR as the authoritative state." (newline)
-          "- Do not rely on unstated memory or raw conversation history." (newline)
-          "- Choose actions that advance active goals in the goals field." (newline)
-          "- Respect constraints, budget, deliverables, and mode." (newline)
-          "- Invoke only commands from SKILL_SET." (newline)
-          "- Do not output hidden reasoning, analysis, or explanations unless using send." (newline)
+             "- Treat CURRENT_CONTEXT_FRAME_S_EXPR as the authoritative working state." (newline)
+             "- The frame is compact; do not expect full raw history inside it." (newline)
+             "- Use query or episodes only when older details are needed." (newline)
+             "- Choose actions that advance active goals in the goals field." (newline)
+             "- If the active goal is completed, call complete-goals-stm or complete-goals-ltm after sending the final answer." (newline)
+             "- Use complete-goals-ltm only for reusable, durable, semantically useful summaries." (newline)
+             "- Do not store raw command results in long-term memory." (newline)
+             "- Respect constraints, budget, deliverables, and mode." (newline)
+             "- Invoke only commands from SKILL_SET." (newline)
+             "- Do not output hidden reasoning, analysis, or explanations unless using send." (newline)
           "OUTPUT_FORMAT: Up to 5 skill command lines, do not wrap quotes around args, do not use variables:" (newline)
           "toolName1 arg1" (newline)
           "toolName2 arg2" (newline)
@@ -45,6 +52,21 @@
           "toolName4 arg4" (newline)
           "toolName5 arg5" (newline)
           "TIME: " (get_time_as_string)))))
+
+(= (getLegacyContext)
+   (string-safe
+      (py-str
+         ("PROMPT: " (getPrompt) (newline)
+          "SKILL_SET: " (getSkills) (newline)
+          "OUTPUT_FORMAT: Up to 5 skill command lines, do not wrap quotes around args, do not use variables:" (newline)
+          "toolName1 arg1" (newline)
+          "toolName2 arg2" (newline)
+          "toolName3 arg3" (newline)
+          "toolName4 arg4" (newline)
+          "toolName5 arg5" (newline)
+          "LAST_SKILL_USE_RESULTS: " (get-state &lastresults) (newline)
+          "TIME: " (get_time_as_string)))))
+
 
 
 (= (HandleError $msg $cmd $sexpr)
@@ -80,7 +102,7 @@
              ($msg (get-state &prevmsg))
 
              ; New input becomes frame state before prompting.
-             ($_ (if $msgnew
+             ($_ (if (and $msgnew (== (useFrames) True))
                     (ctx-ingest-user-message $msg)
                     _))
 
@@ -89,15 +111,16 @@
                     _))
 
              ; Prompt is now frame-based.
-             ($prompt (getContext)))
+             ($prompt (if (== (useFrames) True) (getContext) (getLegacyContext))))
 
          (if (> (get-state &loops) 0)
              (let* (($lastmessage
                        (if $msgnew
-                           "NEW_INPUT_HAS_BEEN_ADMITTED_TO_CONTEXT_FRAME. Select the next skill command from the frame."
-                           (if (spamShield)
+                           (if (== (useFrames) True)
+                           "NEW_INPUT_HAS_BEEN_ADMITTED_TO_CONTEXT_FRAME. Select the next skill command from the frame." (HUMAN-MSG: $msg) )
+                           (if (and (spamShield) (== (useFrames) True))
                                "NO_NEW_INPUT. Continue only if the context frame contains an active useful goal. DO NOT RE-SEND OR SPAM."
-                               "")))
+                               " DO NOT RE-SEND OR SPAM!")))
                     ($_ (change-state! &nextWakeAt (+ (get_time) (wakeupInterval))))
                     ($_ (println! $lastmessage))
                     ($send (py-str ($prompt :-:-:-: $lastmessage)))
@@ -138,13 +161,7 @@
                                     (HandleError
                                        SINGLE_COMMAND_FORMAT_ERROR_NOTHING_WAS_DONE_PLEASE_FIX_AND_RETRY
                                        $s
-                                       (catch
-                                          (let $R
-                                             ; (if (isAllowedSkillCommand $s)
-                                                 (eval $s)
-                                                ;  (SkillRejected NotInSkillSet $s))
-                                             (py-call
-                                                (helper.normalize_string $R)))))))))))
+                                       (catch (let $R (eval $s) (py-call (helper.normalize_string $R)))))))))))
 
                     ($_ (println! $results)))
 
@@ -155,11 +172,15 @@
                        _)
 
                    ; Frame-native audit log.
-                   (ctx-record-command-batch $sexpr $results)
+                   (if (== (useFrames) True)
+                     (progn
+                        (ctx-record-command-batch $sexpr $results)
+                        (ctx-maintain-frame))
+                     _)
 
                    ; Compatibility state.
                    (change-state! &lastresults
-                      (string-safe (repr $results)))))
+                     (string-safe (py-call (helper.compact_plain (repr $results) 1200))))))
 
              (if (> (get_time) (get-state &nextWakeAt))
                  (change-state! &loops (+ 1 (maxWakeLoops)))

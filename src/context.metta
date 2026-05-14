@@ -1,3 +1,6 @@
+(= (ctxPayloadLimit) 900)
+(= (ctxHistorySummaryLimit) 2400)
+(= (ctxLastResultsLimit) 1200)
 
 (= (initContextFrame)
    (progn
@@ -5,13 +8,12 @@
       (change-state! &ctx-mode Idle)
       (change-state! &ctx-hypotheses ())
       (change-state! &ctx-method
-         (CertifiedMethod
-            (status None)
-            (description "")
-            (parameters ())
-            (evaluation-protocol ())
-            (certificate-hash "")))
+         (CertifiedMethod (status None) (description "") (parameters ()) (evaluation-protocol ()) (certificate-hash "")))
       (change-state! &ctx-history ())
+      (change-state! &ctx-history-summary "")
+      (change-state! &ctx-last-user-record ())
+      (change-state! &ctx-last-command-record ())
+      (change-state! &ctx-completed-goal-summary "")
       (change-state! &ctx-results ())
       (change-state! &ctx-modules (defaultContextModules))
       (change-state! &ctx-budget
@@ -32,9 +34,9 @@
     (Constraint SkillCommandsOnly
       "The agent may invoke only commands listed in the skill set.")
     (Constraint AuditEveryCommand
-      "Every command batch and result must be recorded in frame history.")
+      "Every command batch and result must be represented in the prompt-visible frame by a compact summary; exact chronological audit remains available through history/episodes/runtime logs; durable semantic milestones should be stored through remember.")
     (Constraint NoUnjustifiedAutonomousSideEffects
-      "Autonomous actions must serve an active goal and respect budget.")))
+      "Autonomous actions must serve an active goal and respect budget. Exception: if no active goals exist, you are explicitly authorized to autonomously invent and set a new one.")))
 
 (= (defaultContextModules)
    ((Entry send
@@ -116,28 +118,52 @@
       (deliverables (Checklist (get-state &ctx-deliverables)))
       (constraints (Set (get-state &ctx-constraints)))))
 
+(= (promptContextModules)
+   ((Entry skill-set
+      (ModuleProfile
+         (kind SkillSet)
+         (capabilities
+            (send remember query episodes pin shell read-file write-file append-file search tavily-search technical-analysis metta complete-goals-stm complete-goals-ltm compact-frame clear-frame-junk query-frame-memory))
+         (rating 1.0)))))
+
+(= (promptContextFrame)
+   (ContextFrame
+      (goals (Set (get-state &ctx-goals)))
+      (mode (get-state &ctx-mode))
+      (hypotheses (Map (get-state &ctx-hypotheses)))
+      (method (get-state &ctx-method))
+      (history (List (get-state &ctx-history)))
+      (results (Map (get-state &ctx-results)))
+      (modules (Map (promptContextModules)))
+      (budget (get-state &ctx-budget))
+      (deliverables (Checklist (get-state &ctx-deliverables)))
+      (constraints (Set (get-state &ctx-constraints)))))
+
+
 (= (contextFrameForPrompt)
-   (swrite (currentContextFrame)))
+   (swrite (promptContextFrame)))
 
 (= (ctx-id $prefix)
    (py-str ($prefix "-" (get_time_as_string))))
 
 (= (ctx-record-history $kind $payload)
-   (let $record
-      (ExperimentRecord
-         (id (ctx-id Event))
-         (time (get_time_as_string))
-         (kind $kind)
-         (payload $payload))
+   (let* (($summary (ctx-compact-plain $payload))
+          ($record
+             (ExperimentRecord
+                (id (ctx-make-id Event))
+                (time (get_time_as_string))
+                (kind $kind)
+                (summary $summary))))
       (progn
-         (change-state! &ctx-history
-            (append (get-state &ctx-history) ($record)))
+         (change-state! &ctx-last-user-record $record)
+         (ctx-update-history-summary $kind $summary)
+         (ctx-rebuild-history)
          $record)))
 
 (= (ctx-ingest-user-message $msg)
    (let $goal
       (Motive
-         (id (ctx-id Goal))
+         (id (ctx-make-id Goal))
          (source UserDirective)
          (priority 1.0)
          (status Active)
@@ -145,22 +171,38 @@
          (created-at (get_time_as_string)))
       (progn
          (change-state! &ctx-mode GoalDirected)
-         (change-state! &ctx-goals
-            (append (get-state &ctx-goals) ($goal)))
+         (if (== (get-state &ctx-goals) ())
+             (change-state! &ctx-goals ($goal))
+             (ctx-record-history UserMessageForActiveGoal $msg))
+
          (ctx-record-history UserMessage $msg)
          (currentContextFrame))))
 
+(= (ctx-has-active-goals)
+   (not (== (get-state &ctx-goals) ())))
+
+(= (ctx-maintain-frame)
+   (progn
+      (ctx-rebuild-history)
+      (if (== (get-state &ctx-goals) ())
+          (change-state! &ctx-mode Idle)
+          _)
+      (currentContextFrame)))
+
 (= (ctx-record-command-batch $commands $results)
-   (let $record
-      (ExperimentRecord
-         (id (ctx-id CommandBatch))
-         (time (get_time_as_string))
-         (kind CommandBatch)
-         (commands $commands)
-         (results $results))
+   (let* (($commandsSummary (ctx-compact-plain $commands))
+          ($resultsSummary (ctx-compact-plain $results))
+          ($record
+             (ExperimentRecord
+                (id (ctx-make-id CommandBatch))
+                (time (get_time_as_string))
+                (kind CommandBatch)
+                (commands-summary $commandsSummary)
+                (results-summary $resultsSummary))))
       (progn
-         (change-state! &ctx-history
-            (append (get-state &ctx-history) ($record)))
+         (change-state! &ctx-last-command-record $record)
+         (ctx-update-history-summary CommandBatch $resultsSummary)
+         (ctx-rebuild-history)
          (currentContextFrame))))
 
 (= (ctx-add-hypothesis $id $hypothesis)
@@ -194,3 +236,80 @@
          (append (get-state &ctx-deliverables)
             ((Artifact $artifact Pending))))
       (currentContextFrame)))
+
+(= (ctx-make-id $prefix)
+   (py-call (helper.make_id (repr $prefix))))
+
+(= (ctx-compact-plain $value)
+   (py-call
+      (helper.compact_plain
+         (repr $value)
+         (ctxLastResultsLimit))))
+
+(= (ctx-update-history-summary $kind $summary)
+   (let $new-summary
+      (last_chars
+         (py-str
+            ((get-state &ctx-history-summary)
+             " | "
+             $kind
+             ": "
+             $summary))
+         (ctxHistorySummaryLimit))
+      (change-state! &ctx-history-summary $new-summary)))
+
+(= (ctx-rebuild-history)
+   (change-state! &ctx-history
+      ((ExperimentRecord
+          (id "HistorySummary")
+          (time (get_time_as_string))
+          (kind RollingSummary)
+          (payload (get-state &ctx-history-summary)))
+       (get-state &ctx-last-user-record)
+       (get-state &ctx-last-command-record))))
+
+(= (ctx-completed-goal-memory $storage $summary)
+   (py-str
+      ("HyperClawMemory "
+       "kind=CompletedGoal "
+       "storage=" $storage " "
+       "time=" (get_time_as_string) " "
+       "mode=" (get-state &ctx-mode) " "
+       "goals=" (ctx-compact-plain (get-state &ctx-goals)) " "
+       "method=" (ctx-compact-plain (get-state &ctx-method)) " "
+       "results=" (ctx-compact-plain (get-state &ctx-results)) " "
+       "deliverables=" (ctx-compact-plain (get-state &ctx-deliverables)) " "
+       "constraints=" (ctx-compact-plain (get-state &ctx-constraints)) " "
+       "summary=" $summary)))
+
+(= (ctx-complete-goals-to-stm $summary)
+   (let $memory (ctx-completed-goal-memory STM $summary)
+      (progn
+         (pin $memory)
+         (change-state! &ctx-completed-goal-summary $memory)
+         (ctx-record-history GoalCompletedSTM $memory)
+         (ctx-clear-active-workspace $summary)
+         (currentContextFrame))))
+
+(= (ctx-complete-goals-to-ltm $summary)
+   (let $memory (ctx-completed-goal-memory LTM $summary)
+      (progn
+         (remember $memory)
+         (change-state! &ctx-completed-goal-summary $memory)
+         (ctx-record-history GoalCompletedLTM $memory)
+         (ctx-clear-active-workspace $summary)
+         (currentContextFrame))))
+
+(= (ctx-clear-active-workspace $reason)
+   (progn
+      ; Clear completed active work.
+      (change-state! &ctx-goals ())
+      (change-state! &ctx-mode Idle)
+
+      ;clear these after task completion.
+      (change-state! &ctx-hypotheses ())
+      (change-state! &ctx-results ())
+      (change-state! &ctx-deliverables ())
+      (ctx-update-history-summary FrameCleared $reason)
+      (ctx-rebuild-history)
+      FRAME-ACTIVE-WORKSPACE-CLEARED))

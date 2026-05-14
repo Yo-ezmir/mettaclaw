@@ -1,8 +1,29 @@
 from collections import deque
 import re
+import hashlib
 from datetime import datetime
 
 TS_RE = re.compile(r'^\("(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"')
+
+def compact_plain(value, limit=1200):
+    """
+    Return a compact, single-line summary with a stable digest.
+    This does not write files and does not store to LTM.
+    MeTTa decides whether to pin/remember the resulting summary.
+    """
+    text = normalize_string(value)
+    compact = re.sub(r"\s+", " ", text).strip()
+    digest = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+
+    if len(compact) > int(limit):
+        compact = compact[: int(limit) - 3].rstrip() + "..."
+
+    return f"sha256:{digest[:16]} chars:{len(text)} excerpt:{compact}"
+
+
+def make_id(prefix="id"):
+    stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
+    return f"{prefix}-{stamp}"
 
 def extract_timestamp(line):
     m = TS_RE.search(line)
