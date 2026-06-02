@@ -14,6 +14,11 @@
     "- Search the web: search string"
     "- Search the web using the Tavily Search Agent: tavily-search string"
     "- Get technical analysis for a stock ticker using the Technical Analysis Agent: technical-analysis ticker"
+   ; CONTEXT FRAME RELATED
+   "- Complete current active goals and store compact summary in short-term memory: complete-goals-stm summary"
+   "- Complete current active goals and store compact summary in long-term vector memory: complete-goals-ltm summary"
+   "- Compact the prompt-visible context frame without completing goals: compact-frame summary"
+   "- Clear transient frame junk after successful completion: clear-frame-junk summary"
     ;CODE EXECUTION:
     "- Execute MeTTa expression: metta sexpression"
     "Example to invoke Non-Axiomatic Logic via MeTTa: "
@@ -27,6 +32,26 @@
     "metta (|~ ((Implication (Inheritance $1 (IntSet Feathered))"
     "           (Inheritance $1 Bird)) (stv 1.0 0.9))"
     "          ((Inheritance Pingu (IntSet Feathered)) (stv 1.0 0.9)))"))
+
+(= (getFrameSkillsCompact)
+   ("send string"
+"remember string"
+"query short_phrase"
+"episodes time_string"
+"pin string"
+"shell command"
+"read-file filename"
+"write-file filename string"
+"append-file filename string"
+"search query"
+"tavily-search query"
+"technical-analysis ticker"
+"metta sexpression"
+"complete-goals-stm summary"
+"complete-goals-ltm summary"
+"compact-frame summary"
+"clear-frame-junk summary"
+"query-frame-memory short_phrase"))
 
 
 (= (read-file $file)
@@ -54,7 +79,35 @@
 (= (technical-analysis $ticker)
    (py-call (agentverse.technical_analysis $ticker)))
 
-!(import_prolog_functions_from_file (library OmegaClaw-Core ./src/skills.pl) (shell first_char))
+!(import_prolog_functions_from_file (library OmegaClaw-Core ./src/skills.pl) (shell first_char gc read_file_tail))
 
 (= (pin $x)
    PIN-SUCCESS)
+
+(= (complete-goals-stm $summary)
+   (ctx-complete-goals-to-stm $summary))
+
+(= (complete-goals-ltm $summary)
+   (ctx-complete-goals-to-ltm $summary))
+
+(= (compact-frame $summary)
+   (progn
+      (ctx-record-history FrameCompacted $summary)
+      (change-state! &ctx-history-summary
+         (last_chars
+            (py-str
+               ((get-state &ctx-history-summary)
+                " | Compact: "
+                $summary))
+            (ctxHistorySummaryLimit)))
+      (ctx-rebuild-history)
+      (currentContextFrame)))
+
+(= (clear-frame-junk $summary)
+   (progn
+      (change-state! &ctx-hypotheses ())
+      (change-state! &ctx-results ())
+      (change-state! &ctx-deliverables ())
+      (ctx-record-history FrameJunkCleared $summary)
+      (ctx-rebuild-history)
+      (currentContextFrame)))

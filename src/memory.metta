@@ -16,13 +16,10 @@
               (py-call (lib_llm_ext.initLocalEmbedding)) _)))
 
 (= (getPrompt)
-   (if (isTelegram)
-       (read-file-raw (library OmegaClaw-Core ./memory/tg_prompt.txt))
-       (read-file-raw (library OmegaClaw-Core ./memory/prompt.txt))))
+      (read-file (library OmegaClaw-Core ./memory/prompt.txt)))
 
 (= (getHistory)
-   (let $ret (read-file (library OmegaClaw-Core ./memory/history.metta))
-        (last_chars $ret (maxHistory))))
+   (read_file_tail (library OmegaClaw-Core ./memory/history.metta) (maxHistory)))
 
 (= (addToHistory $lastmessage $response $sexpr $msgnew)
    (if $msgnew
