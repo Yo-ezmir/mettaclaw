@@ -24,7 +24,7 @@
           (change-state! &prevmsg "")
           (change-state! &lastresults "")
           (change-state! &loops (maxNewInputLoops))
-          (configure useFrames True)
+          (configure useFrames False)
           (if (== (useFrames) True) (initContextFrame) _)))
 
 
@@ -111,7 +111,7 @@
                     _))
 
              ; Prompt is now frame-based.
-             ($_ (summarizeHistory))
+             
              ($prompt (if (== (useFrames) True) (getContext) (getLegacyContext))))
 
          (if (> (get-state &loops) 0)

@@ -53,7 +53,11 @@
        (useGPTEmbedding (string-safe $str))))
 
 (= (appendToHistory $addition)
-   (append-file (library OmegaClaw-Core ./memory/history.metta) (swrite $addition)))
+   (progn
+      (append-file (library OmegaClaw-Core ./memory/history.metta) (swrite $addition))
+      (if (> (string_length (getHistory)) (* (maxHistory) 8/10))
+          (summarizeHistory)
+          _)))
 
 (= (remember $str)
    (progn (py-call (lib_chromadb.remember $str (embed $str) (get_time_as_string)))
